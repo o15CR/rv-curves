@@ -1,0 +1,27 @@
+[package]
+name = "rv-curves"
+version = "0.1.0"
+edition = "2024"
+autobins = false
+
+[[bin]]
+name = "rv"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.28"
+csv = "1.3"
+nalgebra = "0.33"
+# Use Plotters for higher-quality chart rendering in the TUI.
+#
+# We disable Plotters' default features because they pull in native/system
+# dependencies (e.g., fontconfig via font-kit) that aren't required for drawing
+# into a terminal buffer. We only enable the small feature set we need.
+plotters = { version = "0.3", default-features = false, features = ["line_series"] }
+plotters-ratatui-backend = "0.3"
+ratatui = "0.29"
+rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
