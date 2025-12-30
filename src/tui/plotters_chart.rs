@@ -63,24 +63,14 @@ impl<'a> Widget for RvPlottersChart<'a> {
         let y_labels = generate_labels(y0, y1, 5, &self.fmt_y);
 
         // Build datasets
+        // Render order: points first, then curve on top (so curve isn't cut by scatter)
         let mut datasets = Vec::new();
 
-        // Fitted curve (cyan line)
-        if !self.curve.is_empty() {
-            datasets.push(
-                Dataset::default()
-                    .marker(Marker::Braille)
-                    .graph_type(GraphType::Line)
-                    .style(Style::default().fg(Color::Cyan))
-                    .data(self.curve),
-            );
-        }
-
-        // Observed points (white dots)
+        // Observed points (white)
         if !self.points.is_empty() {
             datasets.push(
                 Dataset::default()
-                    .marker(Marker::Dot)
+                    .marker(Marker::Braille)
                     .graph_type(GraphType::Scatter)
                     .style(Style::default().fg(Color::White))
                     .data(self.points),
@@ -106,6 +96,17 @@ impl<'a> Widget for RvPlottersChart<'a> {
                     .graph_type(GraphType::Scatter)
                     .style(Style::default().fg(Color::Red))
                     .data(self.rich),
+            );
+        }
+
+        // Fitted curve (cyan line) - rendered last so it draws on top
+        if !self.curve.is_empty() {
+            datasets.push(
+                Dataset::default()
+                    .marker(Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(Color::Cyan))
+                    .data(self.curve),
             );
         }
 
