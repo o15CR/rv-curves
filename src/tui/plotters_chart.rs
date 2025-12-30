@@ -1,56 +1,49 @@
-//! Plotters-powered RV curve chart widget for Ratatui.
+//! RV curve chart widget using Ratatui's native Chart.
 //!
-//! Why Plotters instead of Ratatui's built-in `Chart` widget?
-//! - nicer axis + mesh rendering
-//! - less manual work for ticks/labels
-//! - easy to extend later (legend, annotations, exportable PNG/SVG backends, etc.)
-//!
-//! We render Plotters output into the Ratatui buffer using `plotters-ratatui-backend`.
+//! We use Ratatui's built-in Chart widget instead of plotters for better
+//! terminal compatibility and reliable axis label rendering.
 
-use plotters::prelude::*;
-use plotters_ratatui_backend::widget_fn;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Color, Style},
-    widgets::Widget,
+    symbols::Marker,
+    widgets::{Axis, Block, Chart, Dataset, GraphType, Widget},
 };
 
 /// A lightweight, render-only chart description.
-///
-/// The widget is intentionally data-driven: all series and bounds are computed
-/// outside the render call. This keeps `render()` focused on drawing and makes
-/// it easy to test/benchmark the data prep separately.
 pub struct RvPlottersChart<'a> {
     /// Line series for the fitted curve.
     pub curve: &'a [(f64, f64)],
     /// Scatter series for all observed bonds.
     pub points: &'a [(f64, f64)],
-    /// Scatter series for the highlighted cheap names (a subset of `points`).
+    /// Scatter series for the highlighted cheap names.
     pub cheap: &'a [(f64, f64)],
-    /// Scatter series for the highlighted rich names (a subset of `points`).
+    /// Scatter series for the highlighted rich names.
     pub rich: &'a [(f64, f64)],
     /// X bounds (tenor in years).
     pub x_bounds: [f64; 2],
     /// Y bounds (units depend on y-kind: bp or decimal).
     pub y_bounds: [f64; 2],
-    /// Axis labels (kept simple for terminal rendering).
+    /// X axis label.
+    #[allow(dead_code)]
     pub x_label: &'a str,
+    /// Y axis label.
+    #[allow(dead_code)]
     pub y_label: String,
-    /// Formatting of tick labels.
+    /// Formatting of X tick labels.
     pub fmt_x: fn(f64) -> String,
+    /// Formatting of Y tick labels.
     pub fmt_y: fn(f64) -> String,
 }
 
 impl<'a> Widget for RvPlottersChart<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // When the available area is too small, Plotters may fail to build a chart.
-        // In that case, we render a small hint rather than panicking.
         if area.width < 20 || area.height < 8 {
             buf.set_string(
                 area.x,
                 area.y,
-                "Chart area too small (resize terminal).",
+                "Chart too small",
                 Style::default().fg(Color::Yellow),
             );
             return;
@@ -65,77 +58,83 @@ impl<'a> Widget for RvPlottersChart<'a> {
             return;
         }
 
-        // `plotters-ratatui-backend` draws Plotters primitives via Ratatui's
-        // `Canvas` widget, which ultimately writes to the terminal buffer.
-        //
-        // We delegate rendering to the crate-provided widget helper to avoid
-        // coupling our code to its internal backend types.
-        let widget = widget_fn(move |root| {
-            let mut chart = ChartBuilder::on(&root)
-                // Small margins keep the chart readable without wasting space.
-                .margin(1)
-                // Terminal cells are low-res, so keep label areas compact.
-                .set_label_area_size(LabelAreaPosition::Left, 6)
-                .set_label_area_size(LabelAreaPosition::Bottom, 3)
-                .build_cartesian_2d(x0..x1, y0..y1)?;
+        // Generate axis labels
+        let x_labels = generate_labels(x0, x1, 5, &self.fmt_x);
+        let y_labels = generate_labels(y0, y1, 5, &self.fmt_y);
 
-            // Axes + tick labels.
-            //
-            // We disable the mesh lines to reduce visual clutter in low-resolution
-            // terminal rendering; the axes + labels are usually enough for RV screens.
-            chart
-                .configure_mesh()
-                .disable_x_mesh()
-                .disable_y_mesh()
-                .x_desc(self.x_label)
-                .y_desc(&self.y_label)
-                .x_labels(5)
-                .y_labels(5)
-                .x_label_formatter(&|v| (self.fmt_x)(*v))
-                .y_label_formatter(&|v| (self.fmt_y)(*v))
-                .label_style(("sans-serif", 10).into_font().color(&WHITE))
-                .axis_style(&WHITE)
-                .bold_line_style(&WHITE)
-                .draw()?;
+        // Build datasets
+        let mut datasets = Vec::new();
 
-            // Series styling: keep the palette high-contrast for terminal readability.
-            let curve_color = RGBColor(0, 255, 255); // cyan
-            let points_color = WHITE;
-            let cheap_color = RGBColor(0, 255, 0); // green
-            let rich_color = RGBColor(255, 0, 0); // red
+        // Fitted curve (cyan line)
+        if !self.curve.is_empty() {
+            datasets.push(
+                Dataset::default()
+                    .marker(Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(Color::Cyan))
+                    .data(self.curve),
+            );
+        }
 
-            // 1) Fitted curve line.
-            chart.draw_series(LineSeries::new(self.curve.iter().copied(), &curve_color))?;
+        // Observed points (white dots)
+        if !self.points.is_empty() {
+            datasets.push(
+                Dataset::default()
+                    .marker(Marker::Dot)
+                    .graph_type(GraphType::Scatter)
+                    .style(Style::default().fg(Color::White))
+                    .data(self.points),
+            );
+        }
 
-            // 2) Observed points.
-            chart.draw_series(
-                self.points
-                    .iter()
-                    .map(|&(x, y)| Pixel::new((x, y), points_color)),
-            )?;
+        // Cheap highlights (green)
+        if !self.cheap.is_empty() {
+            datasets.push(
+                Dataset::default()
+                    .marker(Marker::Braille)
+                    .graph_type(GraphType::Scatter)
+                    .style(Style::default().fg(Color::Green))
+                    .data(self.cheap),
+            );
+        }
 
-            // 3) Highlights: top cheap and rich.
-            //
-            // We intentionally avoid `Circle` markers here. The underlying
-            // `plotters-ratatui-backend` currently maps circle radii incorrectly
-            // (pixel radius -> normalized canvas units), producing huge circles.
-            //
-            // A colored `Pixel` gives a clean “dot” highlight that looks good in
-            // terminals and reliably overrides the base (white) observation point.
-            chart.draw_series(
-                self.cheap
-                    .iter()
-                    .map(|&(x, y)| Pixel::new((x, y), cheap_color)),
-            )?;
-            chart.draw_series(
-                self.rich
-                    .iter()
-                    .map(|&(x, y)| Pixel::new((x, y), rich_color)),
-            )?;
+        // Rich highlights (red)
+        if !self.rich.is_empty() {
+            datasets.push(
+                Dataset::default()
+                    .marker(Marker::Braille)
+                    .graph_type(GraphType::Scatter)
+                    .style(Style::default().fg(Color::Red))
+                    .data(self.rich),
+            );
+        }
 
-            Ok(())
-        });
+        let chart = Chart::new(datasets)
+            .block(Block::default())
+            .x_axis(
+                Axis::default()
+                    .style(Style::default().fg(Color::Gray))
+                    .bounds(self.x_bounds)
+                    .labels(x_labels),
+            )
+            .y_axis(
+                Axis::default()
+                    .style(Style::default().fg(Color::Gray))
+                    .bounds(self.y_bounds)
+                    .labels(y_labels),
+            );
 
-        widget.render(area, buf);
+        chart.render(area, buf);
     }
+}
+
+/// Generate evenly spaced labels for an axis.
+fn generate_labels(min: f64, max: f64, count: usize, fmt: &dyn Fn(f64) -> String) -> Vec<ratatui::text::Span<'static>> {
+    let mut labels = Vec::with_capacity(count);
+    for i in 0..count {
+        let t = i as f64 / (count - 1) as f64;
+        let v = min + t * (max - min);
+        labels.push(ratatui::text::Span::raw(fmt(v)));
+    }
+    labels
 }

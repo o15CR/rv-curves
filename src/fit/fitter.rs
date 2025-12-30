@@ -255,6 +255,17 @@ fn evaluate_candidate(
     monotone_dir: Option<MonotoneDir>,
     short_end_window: f64,
 ) -> Option<(Vec<f64>, f64)> {
+    // Validate inputs - skip candidates with invalid data.
+    if tenors.iter().any(|t| !t.is_finite() || *t <= 0.0) {
+        return None;
+    }
+    if y.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    if w.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+        return None;
+    }
+
     // If `y(0)` is fixed, we eliminate `β1` and fit the remaining betas (p-1 DOF).
     let p_fit = if front_end_value.is_some() {
         p.saturating_sub(1)
@@ -534,9 +545,8 @@ mod tests {
             .enumerate()
             .map(|(i, &t)| BondPoint {
                 id: format!("B{i}"),
+                asof_date: asof,
                 maturity_date: asof,
-                call_date: None,
-                event_date: asof,
                 tenor: t,
                 y_obs: predict(ModelKind::Ns, t, &betas, &taus),
                 weight: 1.0,
@@ -572,9 +582,8 @@ mod tests {
             .enumerate()
             .map(|(i, &t)| BondPoint {
                 id: format!("B{i}"),
+                asof_date: asof,
                 maturity_date: asof,
-                call_date: None,
-                event_date: asof,
                 tenor: t,
                 y_obs: predict(ModelKind::Ns, t, &true_betas, &true_taus),
                 weight: 1.0,

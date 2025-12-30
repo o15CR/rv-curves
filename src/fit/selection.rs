@@ -7,15 +7,15 @@
 //! Selection rules (per spec):
 //! 1. Exclude underdetermined models: require `n >= k + 5`
 //! 2. Choose the model with minimum BIC
-//! 3. If ΔBIC < 2 between the best and a simpler model, pick the simpler model
+//! 3. If delta_BIC < 2 between the best and a simpler model, pick the simpler model
 
-use crate::domain::{CurveModel, FitResult, FitQuality, FrontEndMode, ModelKind, ModelSpec, YKind};
+use crate::domain::{BondPoint, CurveModel, FitConfig, FitResult, FitQuality, FrontEndMode, ModelKind, ModelSpec, YKind};
 use crate::error::AppError;
 use crate::fit::fitter::{fit_model, FitOptions};
 use crate::fit::tau_grid::{tau_grid_ns, tau_grid_nss, tau_grid_nssc};
 use crate::io::ingest::InputSpec;
 use crate::models::predict;
-use crate::{domain::BondPoint, fit::fitter::ModelFit};
+use crate::fit::fitter::ModelFit;
 
 /// Minimum number of extra observations beyond parameter count.
 const MIN_N_BUFFER: usize = 5;
@@ -32,7 +32,7 @@ pub struct FitSelection {
     pub front_end_value: Option<f64>,
 }
 
-pub fn fit_and_select(points: &[BondPoint], input_spec: &InputSpec, config: &crate::domain::FitConfig) -> Result<FitSelection, AppError> {
+pub fn fit_and_select(points: &[BondPoint], input_spec: &InputSpec, config: &FitConfig) -> Result<FitSelection, AppError> {
     let n = points.len();
 
     // Determine which model kinds to attempt.
@@ -99,18 +99,17 @@ pub fn fit_and_select(points: &[BondPoint], input_spec: &InputSpec, config: &cra
 }
 
 fn effective_param_count(kind: ModelKind, front_end_fixed: bool) -> usize {
-    // Fixing `y(0)=β0+β1` removes one free beta parameter.
+    // Fixing `y(0)=beta0+beta1` removes one free beta parameter.
     kind.param_count().saturating_sub(if front_end_fixed { 1 } else { 0 })
 }
 
 fn resolve_front_end_value(
     points: &[BondPoint],
     input_spec: &InputSpec,
-    config: &crate::domain::FitConfig,
+    config: &FitConfig,
 ) -> Result<Option<f64>, AppError> {
-    // Only meaningful for credit spread curves. For yields, keep the betas free
-    // unless the user explicitly asks for a constraint.
-    if !matches!(input_spec.y_kind, YKind::Oas | YKind::Spread) {
+    // Only meaningful for credit spread curves.
+    if !matches!(input_spec.y_kind, YKind::Oas) {
         return Ok(None);
     }
 
@@ -130,11 +129,6 @@ fn estimate_front_end(points: &[BondPoint], window: f64) -> Option<f64> {
         return None;
     }
 
-    // Take a robust representative level from the front bucket.
-    //
-    // Prefer all points inside the window; if too sparse, fall back to the
-    // shortest few tenors. We use an unweighted median to reduce sensitivity
-    // to idiosyncratic outliers.
     let mut front: Vec<(f64, f64)> = points
         .iter()
         .filter(|p| p.tenor.is_finite() && p.y_obs.is_finite())
@@ -206,9 +200,6 @@ fn select_by_bic(fits: &[FitResult]) -> FitResult {
     let best_bic = best.quality.bic;
 
     // Prefer simplicity if within 2 BIC points.
-    //
-    // We iterate in order of increasing complexity and pick the first fit that
-    // is "close enough" to the best.
     let order = [ModelKind::Ns, ModelKind::Nss, ModelKind::Nssc];
     for kind in order {
         if let Some(f) = fits.iter().find(|f| f.model.name == kind) {
@@ -221,8 +212,7 @@ fn select_by_bic(fits: &[FitResult]) -> FitResult {
     best.clone()
 }
 
-/// A tiny helper that we keep for potential future improvements:
-/// computing fitted values on an x-grid from a `FitResult`.
+/// Compute fitted values on an x-grid from a `FitResult`.
 pub fn fitted_grid(fit: &CurveModel, tenors: &[f64]) -> Vec<f64> {
     tenors
         .iter()
@@ -233,9 +223,42 @@ pub fn fitted_grid(fit: &CurveModel, tenors: &[f64]) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{BondExtras, BondMeta};
-    use crate::domain::RobustKind;
+    use crate::domain::{BondExtras, BondMeta, RobustKind, RatingBand, ShortEndMonotone};
     use chrono::NaiveDate;
+
+    fn make_test_config() -> FitConfig {
+        FitConfig {
+            rating: RatingBand::BBB,
+            sample_count: 100,
+            sample_seed: 42,
+            model_spec: ModelSpec::Auto,
+            tau_min: 0.05,
+            tau_max: 30.0,
+            tau_steps_ns: 5,
+            tau_steps_nss: 5,
+            tau_steps_nssc: 5,
+            tenor_min: 0.0,
+            tenor_max: 100.0,
+            top_n: 10,
+            plot: false,
+            plot_width: 80,
+            plot_height: 20,
+            export_results: None,
+            export_curve: None,
+            front_end_mode: FrontEndMode::Off,
+            front_end_value: None,
+            front_end_window: 1.0,
+            short_end_monotone: ShortEndMonotone::None,
+            short_end_window: 1.0,
+            robust: RobustKind::None,
+            robust_iters: 0,
+            robust_k: 1.5,
+            jump_prob_wide: 0.05,
+            jump_prob_tight: 0.05,
+            jump_k_wide: 2.5,
+            jump_k_tight: 2.5,
+        }
+    }
 
     #[test]
     fn bic_prefers_simpler_when_close() {
@@ -265,7 +288,7 @@ mod tests {
                 quality: FitQuality {
                     sse: 99.0,
                     rmse: 0.0,
-                    bic: 11.5, // worse than NS
+                    bic: 11.5,
                     n,
                 },
             },
@@ -281,9 +304,8 @@ mod tests {
         let points: Vec<BondPoint> = (0..5)
             .map(|i| BondPoint {
                 id: format!("B{i}"),
+                asof_date: asof,
                 maturity_date: asof,
-                call_date: None,
-                event_date: asof,
                 tenor: 1.0 + i as f64,
                 y_obs: 100.0,
                 weight: 1.0,
@@ -294,46 +316,10 @@ mod tests {
 
         let input_spec = InputSpec {
             asof_date: asof,
-            y_kind: crate::domain::YKind::Oas,
-            event_kind: crate::domain::EventKind::Maturity,
-            day_count: crate::domain::DayCount::Act365_25,
-            unit_note: None,
+            y_kind: YKind::Oas,
         };
 
-        let config = crate::domain::FitConfig {
-            csv_path: "x.csv".into(),
-            asof_date: asof,
-            y_axis: crate::domain::YAxis::Oas,
-            credit_unit: crate::domain::CreditUnit::Auto,
-            weight_mode: crate::domain::WeightMode::Uniform,
-            event_kind: crate::domain::EventKind::Maturity,
-            day_count: crate::domain::DayCount::Act365_25,
-            model_spec: ModelSpec::Auto,
-            tau_min: 0.05,
-            tau_max: 30.0,
-            tau_steps_ns: 5,
-            tau_steps_nss: 5,
-            tau_steps_nssc: 5,
-            tenor_min: 0.0,
-            tenor_max: 100.0,
-            filter_sector: None,
-            filter_rating: None,
-            filter_currency: None,
-            top_n: 10,
-            plot: false,
-            plot_width: 80,
-            plot_height: 20,
-            export_results: None,
-            export_curve: None,
-            front_end_mode: crate::domain::FrontEndMode::Off,
-            front_end_value: None,
-            front_end_window: 1.0,
-            short_end_monotone: crate::domain::ShortEndMonotone::None,
-            short_end_window: 1.0,
-            robust: RobustKind::None,
-            robust_iters: 0,
-            robust_k: 1.5,
-        };
+        let config = make_test_config();
 
         let err = fit_and_select(&points, &input_spec, &config).unwrap_err();
         assert_eq!(err.exit_code(), 3);
@@ -341,8 +327,6 @@ mod tests {
 
     #[test]
     fn auto_selects_ns_on_ns_data_even_if_more_complex_fit_is_exact() {
-        // Because NSS/NSSC can represent NS exactly (by setting extra betas to 0),
-        // BIC should still choose NS due to the parameter penalty.
         let asof = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
         let true_betas = [100.0, -20.0, 50.0];
         let true_taus = [2.0];
@@ -353,9 +337,8 @@ mod tests {
             .enumerate()
             .map(|(i, &t)| BondPoint {
                 id: format!("B{i}"),
+                asof_date: asof,
                 maturity_date: asof,
-                call_date: None,
-                event_date: asof,
                 tenor: t,
                 y_obs: crate::models::predict(ModelKind::Ns, t, &true_betas, &true_taus),
                 weight: 1.0,
@@ -366,47 +349,15 @@ mod tests {
 
         let input_spec = InputSpec {
             asof_date: asof,
-            y_kind: crate::domain::YKind::Oas,
-            event_kind: crate::domain::EventKind::Maturity,
-            day_count: crate::domain::DayCount::Act365_25,
-            unit_note: None,
+            y_kind: YKind::Oas,
         };
 
-        // Use a tau grid that includes the true tau exactly (1,2,4).
-        let config = crate::domain::FitConfig {
-            csv_path: "x.csv".into(),
-            asof_date: asof,
-            y_axis: crate::domain::YAxis::Oas,
-            credit_unit: crate::domain::CreditUnit::Auto,
-            weight_mode: crate::domain::WeightMode::Uniform,
-            event_kind: crate::domain::EventKind::Maturity,
-            day_count: crate::domain::DayCount::Act365_25,
-            model_spec: ModelSpec::Auto,
-            tau_min: 1.0,
-            tau_max: 4.0,
-            tau_steps_ns: 3,
-            tau_steps_nss: 3,
-            tau_steps_nssc: 3,
-            tenor_min: 0.0,
-            tenor_max: 100.0,
-            filter_sector: None,
-            filter_rating: None,
-            filter_currency: None,
-            top_n: 10,
-            plot: false,
-            plot_width: 80,
-            plot_height: 20,
-            export_results: None,
-            export_curve: None,
-            front_end_mode: crate::domain::FrontEndMode::Off,
-            front_end_value: None,
-            front_end_window: 1.0,
-            short_end_monotone: crate::domain::ShortEndMonotone::None,
-            short_end_window: 1.0,
-            robust: RobustKind::None,
-            robust_iters: 0,
-            robust_k: 1.5,
-        };
+        let mut config = make_test_config();
+        config.tau_min = 1.0;
+        config.tau_max = 4.0;
+        config.tau_steps_ns = 3;
+        config.tau_steps_nss = 3;
+        config.tau_steps_nssc = 3;
 
         let selection = fit_and_select(&points, &input_spec, &config).unwrap();
         assert_eq!(selection.best.model.name, ModelKind::Ns);
@@ -424,9 +375,8 @@ mod tests {
             .enumerate()
             .map(|(i, &t)| BondPoint {
                 id: format!("B{i}"),
+                asof_date: asof,
                 maturity_date: asof,
-                call_date: None,
-                event_date: asof,
                 tenor: t,
                 y_obs: crate::models::predict(ModelKind::Nss, t, &true_betas, &true_taus),
                 weight: 1.0,
@@ -437,47 +387,15 @@ mod tests {
 
         let input_spec = InputSpec {
             asof_date: asof,
-            y_kind: crate::domain::YKind::Oas,
-            event_kind: crate::domain::EventKind::Maturity,
-            day_count: crate::domain::DayCount::Act365_25,
-            unit_note: None,
+            y_kind: YKind::Oas,
         };
 
-        // Tau grid: 1,2,4,8,16 (includes 2 and 8).
-        let config = crate::domain::FitConfig {
-            csv_path: "x.csv".into(),
-            asof_date: asof,
-            y_axis: crate::domain::YAxis::Oas,
-            credit_unit: crate::domain::CreditUnit::Auto,
-            weight_mode: crate::domain::WeightMode::Uniform,
-            event_kind: crate::domain::EventKind::Maturity,
-            day_count: crate::domain::DayCount::Act365_25,
-            model_spec: ModelSpec::Auto,
-            tau_min: 1.0,
-            tau_max: 16.0,
-            tau_steps_ns: 5,
-            tau_steps_nss: 5,
-            tau_steps_nssc: 5,
-            tenor_min: 0.0,
-            tenor_max: 100.0,
-            filter_sector: None,
-            filter_rating: None,
-            filter_currency: None,
-            top_n: 10,
-            plot: false,
-            plot_width: 80,
-            plot_height: 20,
-            export_results: None,
-            export_curve: None,
-            front_end_mode: crate::domain::FrontEndMode::Off,
-            front_end_value: None,
-            front_end_window: 1.0,
-            short_end_monotone: crate::domain::ShortEndMonotone::None,
-            short_end_window: 1.0,
-            robust: RobustKind::None,
-            robust_iters: 0,
-            robust_k: 1.5,
-        };
+        let mut config = make_test_config();
+        config.tau_min = 1.0;
+        config.tau_max = 16.0;
+        config.tau_steps_ns = 5;
+        config.tau_steps_nss = 5;
+        config.tau_steps_nssc = 5;
 
         let selection = fit_and_select(&points, &input_spec, &config).unwrap();
         assert_eq!(selection.best.model.name, ModelKind::Nss);
