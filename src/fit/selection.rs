@@ -9,13 +9,12 @@
 //! 2. Choose the model with minimum BIC
 //! 3. If delta_BIC < 2 between the best and a simpler model, pick the simpler model
 
-use crate::domain::{BondPoint, CurveModel, FitConfig, FitResult, FitQuality, FrontEndMode, ModelKind, ModelSpec, YKind};
+use crate::domain::{BondPoint, CurveModel, FitConfig, FitResult, FitQuality, ModelKind, ModelSpec};
 use crate::error::AppError;
-use crate::fit::fitter::{fit_model, FitOptions};
+use crate::fit::fitter::{fit_model, ModelFit};
 use crate::fit::tau_grid::{tau_grid_ns, tau_grid_nss, tau_grid_nssc};
 use crate::io::ingest::InputSpec;
 use crate::models::predict;
-use crate::fit::fitter::ModelFit;
 
 /// Minimum number of extra observations beyond parameter count.
 const MIN_N_BUFFER: usize = 5;
@@ -28,11 +27,9 @@ pub struct FitSelection {
     pub fits: Vec<FitResult>,
     /// Any models that were skipped and why (for diagnostics).
     pub skipped: Vec<(ModelKind, String)>,
-    /// The fixed `y(0)` value used for the fit (if any).
-    pub front_end_value: Option<f64>,
 }
 
-pub fn fit_and_select(points: &[BondPoint], input_spec: &InputSpec, config: &FitConfig) -> Result<FitSelection, AppError> {
+pub fn fit_and_select(points: &[BondPoint], _input_spec: &InputSpec, config: &FitConfig) -> Result<FitSelection, AppError> {
     let n = points.len();
 
     // Determine which model kinds to attempt.
@@ -46,10 +43,8 @@ pub fn fit_and_select(points: &[BondPoint], input_spec: &InputSpec, config: &Fit
     let mut fits = Vec::new();
     let mut skipped = Vec::new();
 
-    let front_end_value = resolve_front_end_value(points, input_spec, config)?;
-
     for kind in model_kinds {
-        let k = effective_param_count(kind, front_end_value.is_some());
+        let k = kind.param_count();
         if n < k + MIN_N_BUFFER {
             skipped.push((
                 kind,
@@ -64,15 +59,7 @@ pub fn fit_and_select(points: &[BondPoint], input_spec: &InputSpec, config: &Fit
             ModelKind::Nssc => tau_grid_nssc(config.tau_min, config.tau_max, config.tau_steps_nssc)?,
         };
 
-        let opts = FitOptions {
-            front_end_value,
-            short_end_monotone: config.short_end_monotone,
-            short_end_window: config.short_end_window,
-            robust: config.robust,
-            robust_iters: config.robust_iters,
-            robust_k: config.robust_k,
-        };
-        let fit = fit_model(kind, points, &tau_grid, &opts)?;
+        let fit = fit_model(kind, points, &tau_grid)?;
         fits.push(to_fit_result(fit, n, k));
     }
 
@@ -94,73 +81,7 @@ pub fn fit_and_select(points: &[BondPoint], input_spec: &InputSpec, config: &Fit
         best,
         fits,
         skipped,
-        front_end_value,
     })
-}
-
-fn effective_param_count(kind: ModelKind, front_end_fixed: bool) -> usize {
-    // Fixing `y(0)=beta0+beta1` removes one free beta parameter.
-    kind.param_count().saturating_sub(if front_end_fixed { 1 } else { 0 })
-}
-
-fn resolve_front_end_value(
-    points: &[BondPoint],
-    input_spec: &InputSpec,
-    config: &FitConfig,
-) -> Result<Option<f64>, AppError> {
-    // Only meaningful for credit spread curves.
-    if !matches!(input_spec.y_kind, YKind::Oas) {
-        return Ok(None);
-    }
-
-    match config.front_end_mode {
-        FrontEndMode::Off => Ok(None),
-        FrontEndMode::Zero => Ok(Some(0.0)),
-        FrontEndMode::Fixed => config
-            .front_end_value
-            .ok_or_else(|| AppError::new(2, "`--front-end fixed` requires `--front-end-value <FLOAT>`."))
-            .map(Some),
-        FrontEndMode::Auto => Ok(estimate_front_end(points, config.front_end_window)),
-    }
-}
-
-fn estimate_front_end(points: &[BondPoint], window: f64) -> Option<f64> {
-    if points.is_empty() {
-        return None;
-    }
-
-    let mut front: Vec<(f64, f64)> = points
-        .iter()
-        .filter(|p| p.tenor.is_finite() && p.y_obs.is_finite())
-        .map(|p| (p.tenor, p.y_obs))
-        .collect();
-
-    front.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-    let mut y_vals: Vec<f64> = front
-        .iter()
-        .filter(|(t, _)| *t <= window)
-        .map(|(_, y)| *y)
-        .collect();
-
-    if y_vals.len() < 3 {
-        y_vals = front.iter().take(5.min(front.len())).map(|(_, y)| *y).collect();
-    }
-
-    median_mut(&mut y_vals)
-}
-
-fn median_mut(values: &mut [f64]) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let mid = values.len() / 2;
-    if values.len() % 2 == 1 {
-        Some(values[mid])
-    } else {
-        Some((values[mid - 1] + values[mid]) / 2.0)
-    }
 }
 
 fn to_fit_result(fit: ModelFit, n: usize, k: usize) -> FitResult {
@@ -223,7 +144,7 @@ pub fn fitted_grid(fit: &CurveModel, tenors: &[f64]) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{BondExtras, BondMeta, RobustKind, RatingBand, ShortEndMonotone};
+    use crate::domain::{BondExtras, BondMeta, RatingBand, YKind};
     use chrono::NaiveDate;
 
     fn make_test_config() -> FitConfig {
@@ -245,14 +166,6 @@ mod tests {
             plot_height: 20,
             export_results: None,
             export_curve: None,
-            front_end_mode: FrontEndMode::Off,
-            front_end_value: None,
-            front_end_window: 1.0,
-            short_end_monotone: ShortEndMonotone::None,
-            short_end_window: 1.0,
-            robust: RobustKind::None,
-            robust_iters: 0,
-            robust_k: 1.5,
             jump_prob_wide: 0.05,
             jump_prob_tight: 0.05,
             jump_k_wide: 2.5,

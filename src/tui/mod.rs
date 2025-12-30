@@ -360,11 +360,7 @@ impl App {
 
     fn draw_chart(&self, frame: &mut ratatui::Frame<'_>, area: Rect) {
         let y_kind = self.run.ingest.input_spec.y_kind;
-        let x_min = if self.run.selection.front_end_value.is_some() {
-            0.0
-        } else {
-            self.run.ingest.stats.tenor_min
-        };
+        let x_min = self.run.ingest.stats.tenor_min;
         let (curve, points, cheap, rich, x_bounds, y_bounds) = chart_series(&self.run, x_min);
 
         let title = format!(

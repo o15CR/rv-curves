@@ -116,17 +116,6 @@ pub fn fit_config_from_args(args: &FitArgs) -> FitConfig {
         export_results: args.export.clone(),
         export_curve: args.export_curve.clone(),
 
-        front_end_mode: args.front_end_mode,
-        front_end_value: args.front_end_value,
-        front_end_window: args.front_end_window,
-
-        short_end_monotone: args.short_end_monotone,
-        short_end_window: args.short_end_window,
-
-        robust: args.robust,
-        robust_iters: args.robust_iters,
-        robust_k: args.robust_k,
-
         jump_prob_wide: args.jump_prob_wide,
         jump_prob_tight: args.jump_prob_tight,
         jump_k_wide: args.jump_k_wide,

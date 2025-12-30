@@ -67,15 +67,6 @@ pub fn format_run_summary(ingest: &IngestedData, selection: &FitSelection, confi
         config.tenor_min,
         config.tenor_max,
     ));
-    out.push_str(&format!(
-        "Fit: front_end={} | short_end_monotone={:?}@{:.2}y | robust={} (iters={}, k={})\n",
-        front_end_status(selection.front_end_value, config.front_end_mode),
-        config.short_end_monotone,
-        config.short_end_window,
-        robust_status(config.robust),
-        config.robust_iters,
-        config.robust_k
-    ));
 
     out.push_str(&format!(
         "Points: n={} | tenor=[{:.3}, {:.3}] | y=[{:.2}, {:.2}]bp\n",
@@ -111,26 +102,6 @@ pub fn format_run_summary(ingest: &IngestedData, selection: &FitSelection, confi
     out.push('\n');
 
     out
-}
-
-fn robust_status(kind: crate::domain::RobustKind) -> &'static str {
-    match kind {
-        crate::domain::RobustKind::None => "none",
-        crate::domain::RobustKind::Huber => "huber",
-    }
-}
-
-fn front_end_status(value_used: Option<f64>, mode: crate::domain::FrontEndMode) -> String {
-    let Some(v) = value_used else {
-        return "off".to_string();
-    };
-
-    match mode {
-        crate::domain::FrontEndMode::Auto => format!("auto({v:.1})"),
-        crate::domain::FrontEndMode::Zero => format!("zero({v:.1})"),
-        crate::domain::FrontEndMode::Fixed => format!("fixed({v:.1})"),
-        crate::domain::FrontEndMode::Off => format!("{v:.1}"),
-    }
 }
 
 /// Format the cheap/rich tables.
