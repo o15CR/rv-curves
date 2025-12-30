@@ -21,21 +21,31 @@ use crate::math::solve_least_squares;
 use crate::models::{fill_design_row, predict};
 use crate::domain::RobustKind;
 
+/// A single front-end anchor point for soft regularization.
+#[derive(Debug, Clone)]
+pub struct AnchorPoint {
+    /// Tenor in years.
+    pub tenor: f64,
+    /// Target y-value (baseline level) in bp.
+    pub y: f64,
+    /// Weight = 1 / sigma^2.
+    pub weight: f64,
+}
+
+/// Optional baseline prior used to stabilize the fit.
+#[derive(Debug, Clone)]
+pub struct BaselinePrior {
+    /// Baseline levels (bp) evaluated at each bond tenor.
+    pub y: Vec<f64>,
+    /// Per-point weights = 1 / sigma_prior^2.
+    pub weights: Vec<f64>,
+    /// Front-end anchor points at fixed tenors (soft regularization).
+    pub anchors: Vec<AnchorPoint>,
+}
+
 /// Fitting options that affect how each model is calibrated.
 #[derive(Debug, Clone)]
 pub struct FitOptions {
-    /// Optional fixed short-end constraint.
-    ///
-    /// When set, we enforce `y(0) = front_end_value` exactly via the identity
-    /// `y(0) = β0 + β1` (true for NS / NSS / NSSC because all curvature terms
-    /// vanish at `t → 0`).
-    ///
-    /// Implementation detail:
-    /// we eliminate `β1` from the regression and reconstruct it afterwards as
-    /// `β1 = y(0) - β0`. This keeps the fit deterministic and avoids injecting
-    /// synthetic observations.
-    pub front_end_value: Option<f64>,
-
     /// Optional short-end monotonicity constraint (shape guardrail).
     pub short_end_monotone: ShortEndMonotone,
     /// Tenor window (years) over which short-end monotonicity is enforced.
@@ -47,6 +57,9 @@ pub struct FitOptions {
     pub robust_iters: usize,
     /// Huber tuning constant.
     pub robust_k: f64,
+
+    /// Enforce a non-negative fitted curve across the tenor window.
+    pub enforce_non_negative: bool,
 }
 
 /// Best fit for a single model kind.
@@ -64,7 +77,8 @@ struct Candidate {
     idx: usize,
     taus: Vec<f64>,
     betas: Vec<f64>,
-    sse: f64,
+    sse_total: f64,
+    sse_data: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +93,7 @@ pub fn fit_model(
     points: &[BondPoint],
     tau_grid: &[Vec<f64>],
     opts: &FitOptions,
+    prior: Option<&BaselinePrior>,
 ) -> Result<ModelFit, AppError> {
     if points.is_empty() {
         return Err(AppError::new(3, "No data points to fit."));
@@ -95,6 +110,7 @@ pub fn fit_model(
 
     let p = model.beta_len();
     let n = tenors_real.len();
+    let (tenor_min, tenor_max) = tenor_range(&tenors_real);
 
     let monotone_dir = resolve_monotone_dir(
         opts.short_end_monotone,
@@ -130,9 +146,12 @@ pub fn fit_model(
             &y_real,
             &w_work_real,
             p,
-            opts.front_end_value,
             monotone_dir_work,
             opts.short_end_window,
+            opts.enforce_non_negative,
+            tenor_min,
+            tenor_max,
+            prior,
         ) {
             Ok(c) => c,
             Err(e) => {
@@ -148,9 +167,12 @@ pub fn fit_model(
                         &y_real,
                         &w_work_real,
                         p,
-                        opts.front_end_value,
                         None,
                         opts.short_end_window,
+                        opts.enforce_non_negative,
+                        tenor_min,
+                        tenor_max,
+                        prior,
                     )?
                 } else {
                     return Err(e);
@@ -176,12 +198,13 @@ pub fn fit_model(
         ));
     };
 
-    let rmse = (best.sse / n as f64).sqrt();
+    // Report diagnostics on real data only; the prior is a stabilizer.
+    let rmse = (best.sse_data / n as f64).sqrt();
     Ok(ModelFit {
         model,
         betas: best.betas.clone(),
         taus: best.taus.clone(),
-        sse: best.sse,
+        sse: best.sse_data,
         rmse,
     })
 }
@@ -193,9 +216,12 @@ fn fit_once(
     y: &[f64],
     w: &[f64],
     p: usize,
-    front_end_value: Option<f64>,
     monotone_dir: Option<MonotoneDir>,
     short_end_window: f64,
+    enforce_non_negative: bool,
+    tenor_min: f64,
+    tenor_max: f64,
+    prior: Option<&BaselinePrior>,
 ) -> Result<Candidate, AppError> {
     let n = tenors.len();
 
@@ -212,15 +238,19 @@ fn fit_once(
                 w,
                 n,
                 p,
-                front_end_value,
                 monotone_dir,
                 short_end_window,
+                enforce_non_negative,
+                tenor_min,
+                tenor_max,
+                prior,
             )
-            .map(|(betas, sse)| Candidate {
+            .map(|(betas, sse_total, sse_data)| Candidate {
                 idx,
                 taus: taus.clone(),
                 betas,
-                sse,
+                sse_total,
+                sse_data,
             })
         })
         .collect();
@@ -235,7 +265,7 @@ fn fit_once(
     // Deterministic selection: pick the minimum SSE; break ties by original grid index.
     let mut best = &candidates[0];
     for c in &candidates[1..] {
-        if c.sse < best.sse || (c.sse == best.sse && c.idx < best.idx) {
+        if c.sse_total < best.sse_total || (c.sse_total == best.sse_total && c.idx < best.idx) {
             best = c;
         }
     }
@@ -251,65 +281,65 @@ fn evaluate_candidate(
     w: &[f64],
     n: usize,
     p: usize,
-    front_end_value: Option<f64>,
     monotone_dir: Option<MonotoneDir>,
     short_end_window: f64,
-) -> Option<(Vec<f64>, f64)> {
-    // If `y(0)` is fixed, we eliminate `β1` and fit the remaining betas (p-1 DOF).
-    let p_fit = if front_end_value.is_some() {
-        p.saturating_sub(1)
-    } else {
-        p
-    };
+    enforce_non_negative: bool,
+    tenor_min: f64,
+    tenor_max: f64,
+    prior: Option<&BaselinePrior>,
+) -> Option<(Vec<f64>, f64, f64)> {
+    let n_prior = prior.map(|pr| pr.y.len()).unwrap_or(0);
+    let n_anchors = prior.map(|pr| pr.anchors.len()).unwrap_or(0);
+
+    if let Some(prior) = prior {
+        if prior.y.len() != n || prior.weights.len() != n {
+            return None;
+        }
+    }
 
     // Build weighted design matrix X_w and weighted observation vector y_w.
-    let mut xw = DMatrix::<f64>::zeros(n, p_fit);
-    let mut yw = DVector::<f64>::zeros(n);
+    // Total rows: n (real data) + n_prior (baseline prior) + n_anchors (front-end anchors)
+    let total_rows = n + n_prior + n_anchors;
+    let mut xw = DMatrix::<f64>::zeros(total_rows, p);
+    let mut yw = DVector::<f64>::zeros(total_rows);
     let mut row = vec![0.0; p];
 
+    // 1. Real observations
     for i in 0..n {
         fill_design_row(model, tenors[i], taus, &mut row);
         let sw = w[i].sqrt();
+        for j in 0..p {
+            xw[(i, j)] = row[j] * sw;
+        }
+        yw[i] = y[i] * sw;
+    }
 
-        if let Some(y0) = front_end_value {
-            // With `y(0)=y0`:
-            //   y(t) = β0 + β1 f1 + β2 f2 + ...
-            // and β1 = y0 - β0, so:
-            //   y(t) = y0*f1 + β0*(1 - f1) + β2*f2 + ...
-            //
-            // Move known term to LHS:
-            //   y_adj = y - y0*f1 = β0*(1 - f1) + β2*f2 + ...
-            let g1 = row[1]; // f1(t, τ1)
-            let y_adj = y[i] - y0 * g1;
-
-            xw[(i, 0)] = (1.0 - g1) * sw; // β0
-            for j in 2..p {
-                xw[(i, j - 1)] = row[j] * sw;
-            }
-            yw[i] = y_adj * sw;
-        } else {
+    // 2. Baseline prior rows (at observation tenors)
+    if let Some(prior) = prior {
+        for i in 0..n {
+            let row_idx = n + i;
+            fill_design_row(model, tenors[i], taus, &mut row);
+            let sw = prior.weights[i].sqrt();
             for j in 0..p {
-                xw[(i, j)] = row[j] * sw;
+                xw[(row_idx, j)] = row[j] * sw;
             }
-            yw[i] = y[i] * sw;
+            yw[row_idx] = prior.y[i] * sw;
+        }
+
+        // 3. Front-end anchor rows (at fixed tenors)
+        for (i, anchor) in prior.anchors.iter().enumerate() {
+            let row_idx = n + n_prior + i;
+            fill_design_row(model, anchor.tenor, taus, &mut row);
+            let sw = anchor.weight.sqrt();
+            for j in 0..p {
+                xw[(row_idx, j)] = row[j] * sw;
+            }
+            yw[row_idx] = anchor.y * sw;
         }
     }
 
     let beta = solve_least_squares(&xw, &yw)?;
-    // Reconstruct the full beta vector expected by `predict`.
-    let betas: Vec<f64> = if let Some(y0) = front_end_value {
-        let mut out = Vec::with_capacity(p);
-        let beta0 = beta[0];
-        let beta1 = y0 - beta0;
-        out.push(beta0);
-        out.push(beta1);
-        for j in 1..beta.len() {
-            out.push(beta[j]);
-        }
-        out
-    } else {
-        beta.iter().copied().collect()
-    };
+    let betas: Vec<f64> = beta.iter().copied().collect();
 
     // Optional shape guardrail.
     if let Some(dir) = monotone_dir {
@@ -318,19 +348,82 @@ fn evaluate_candidate(
         }
     }
 
+    if enforce_non_negative && violates_non_negative(model, &betas, taus, tenor_min, tenor_max) {
+        return None;
+    }
+
     // Compute weighted SSE using the unweighted model prediction.
-    let mut sse = 0.0;
+    // sse_data: residuals on real observations only (for RMSE reporting)
+    let mut sse_data = 0.0;
     for i in 0..n {
         let y_fit = predict(model, tenors[i], &betas, taus);
         let r = y[i] - y_fit;
-        sse += w[i] * r * r;
+        sse_data += w[i] * r * r;
     }
 
-    if sse.is_finite() {
-        Some((betas, sse))
+    // sse_total: includes baseline prior and anchor contributions (for tau selection)
+    let mut sse_total = sse_data;
+    if let Some(prior) = prior {
+        // Baseline prior contribution
+        for i in 0..n {
+            let y_fit = predict(model, tenors[i], &betas, taus);
+            let r = prior.y[i] - y_fit;
+            sse_total += prior.weights[i] * r * r;
+        }
+        // Anchor contribution
+        for anchor in &prior.anchors {
+            let y_fit = predict(model, anchor.tenor, &betas, taus);
+            let r = anchor.y - y_fit;
+            sse_total += anchor.weight * r * r;
+        }
+    }
+
+    if sse_total.is_finite() && sse_data.is_finite() {
+        Some((betas, sse_total, sse_data))
     } else {
         None
     }
+}
+
+fn tenor_range(tenors: &[f64]) -> (f64, f64) {
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for &t in tenors {
+        if t.is_finite() {
+            min = min.min(t);
+            max = max.max(t);
+        }
+    }
+    if !min.is_finite() || !max.is_finite() || max <= min {
+        (0.0, 0.0)
+    } else {
+        (min, max)
+    }
+}
+
+fn violates_non_negative(
+    model: ModelKind,
+    betas: &[f64],
+    taus: &[f64],
+    tenor_min: f64,
+    tenor_max: f64,
+) -> bool {
+    let t0 = tenor_min.max(0.0);
+    let t1 = tenor_max.max(t0);
+    if !(t0.is_finite() && t1.is_finite() && t1 >= t0) {
+        return false;
+    }
+
+    let n = 40usize;
+    for i in 0..n {
+        let u = i as f64 / (n as f64 - 1.0);
+        let t = t0 + u * (t1 - t0);
+        let y = predict(model, t, betas, taus);
+        if !y.is_finite() || y < 0.0 {
+            return true;
+        }
+    }
+    false
 }
 
 fn resolve_monotone_dir(
@@ -534,9 +627,8 @@ mod tests {
             .enumerate()
             .map(|(i, &t)| BondPoint {
                 id: format!("B{i}"),
+                asof_date: asof,
                 maturity_date: asof,
-                call_date: None,
-                event_date: asof,
                 tenor: t,
                 y_obs: predict(ModelKind::Ns, t, &betas, &taus),
                 weight: 1.0,
@@ -547,14 +639,14 @@ mod tests {
 
         let grid = vec![vec![2.0]];
         let opts = FitOptions {
-            front_end_value: None,
             short_end_monotone: crate::domain::ShortEndMonotone::None,
             short_end_window: 1.0,
             robust: RobustKind::None,
             robust_iters: 0,
             robust_k: 1.5,
+            enforce_non_negative: false,
         };
-        let fit = fit_model(ModelKind::Ns, &points, &grid, &opts).unwrap();
+        let fit = fit_model(ModelKind::Ns, &points, &grid, &opts, None).unwrap();
         assert!(fit.sse.is_finite());
         assert!(fit.rmse.is_finite());
     }
@@ -572,9 +664,8 @@ mod tests {
             .enumerate()
             .map(|(i, &t)| BondPoint {
                 id: format!("B{i}"),
+                asof_date: asof,
                 maturity_date: asof,
-                call_date: None,
-                event_date: asof,
                 tenor: t,
                 y_obs: predict(ModelKind::Ns, t, &true_betas, &true_taus),
                 weight: 1.0,
@@ -585,14 +676,14 @@ mod tests {
 
         let grid = vec![vec![1.0], vec![2.0], vec![4.0]];
         let opts = FitOptions {
-            front_end_value: None,
             short_end_monotone: crate::domain::ShortEndMonotone::None,
             short_end_window: 1.0,
             robust: RobustKind::None,
             robust_iters: 0,
             robust_k: 1.5,
+            enforce_non_negative: false,
         };
-        let fit = fit_model(ModelKind::Ns, &points, &grid, &opts).unwrap();
+        let fit = fit_model(ModelKind::Ns, &points, &grid, &opts, None).unwrap();
 
         assert_eq!(fit.taus.len(), 1);
         assert!((fit.taus[0] - 2.0).abs() < 1e-12);

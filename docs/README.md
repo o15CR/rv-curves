@@ -1,13 +1,14 @@
 # Documentation index
 
-Reading order (recommended):
+Current (TUI + FRED sample mode):
 
-1. `../project.md` — project overview and end-to-end behavior
-2. `cli.md` — CLI commands, flags, and examples
-3. `tui.md` — Ratatui UI workflow and keybindings
-4. `csv.md` — CSV schema, validation, tenor + y selection rules
-5. `models.md` — Nelson–Siegel family models + basis functions
-6. `fitting.md` — tau grid search + weighted OLS + BIC selection
-7. `output.md` — terminal tables, ASCII plot, and export formats
-8. `architecture.md` — Rust module layout and dependency choices
-9. `testing.md` — unit + golden test plan
+1. `../project.md` — overview and scope
+2. `tui.md` — TUI workflow + keybindings
+3. `fitting.md` — model fitting and selection
+4. `models.md` — Nelson–Siegel family + basis functions
+
+Legacy (pre‑FRED CSV workflow):
+
+- `cli.md`, `csv.md`, `output.md`, `architecture.md`, `testing.md`
+
+These legacy docs are retained for reference but no longer describe the runtime behavior.

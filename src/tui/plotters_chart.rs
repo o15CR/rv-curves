@@ -70,32 +70,34 @@ impl<'a> Widget for RvPlottersChart<'a> {
         //
         // We delegate rendering to the crate-provided widget helper to avoid
         // coupling our code to its internal backend types.
-        let widget = widget_fn(move |root| {
+            let widget = widget_fn(move |root| {
             let mut chart = ChartBuilder::on(&root)
                 // Small margins keep the chart readable without wasting space.
                 .margin(1)
                 // Terminal cells are low-res, so keep label areas compact.
-                .set_label_area_size(LabelAreaPosition::Left, 6)
-                .set_label_area_size(LabelAreaPosition::Bottom, 3)
+                .set_label_area_size(LabelAreaPosition::Left, 1)
+                .set_label_area_size(LabelAreaPosition::Bottom, 1)
                 .build_cartesian_2d(x0..x1, y0..y1)?;
 
             // Axes + tick labels.
             //
             // We disable the mesh lines to reduce visual clutter in low-resolution
             // terminal rendering; the axes + labels are usually enough for RV screens.
+            let axis_color = RGBColor(180, 180, 180);
+
             chart
                 .configure_mesh()
                 .disable_x_mesh()
                 .disable_y_mesh()
                 .x_desc(self.x_label)
                 .y_desc(&self.y_label)
-                .x_labels(5)
-                .y_labels(5)
+                .x_labels(0)
+                .y_labels(0)
                 .x_label_formatter(&|v| (self.fmt_x)(*v))
                 .y_label_formatter(&|v| (self.fmt_y)(*v))
-                .label_style(("sans-serif", 10).into_font().color(&WHITE))
-                .axis_style(&WHITE)
-                .bold_line_style(&WHITE)
+                .label_style(("sans-serif", 10).into_font().color(&axis_color))
+                .axis_style(&axis_color)
+                .bold_line_style(&axis_color)
                 .draw()?;
 
             // Series styling: keep the palette high-contrast for terminal readability.

@@ -15,7 +15,7 @@ use chrono::NaiveDate;
 use clap::{Parser, Subcommand};
 
 use crate::domain::{
-    CreditUnit, DayCount, EventKind, FrontEndMode, ModelSpec, RobustKind, ShortEndMonotone, WeightMode, YAxis,
+    CreditUnit, DayCount, EventKind, ModelSpec, RobustKind, ShortEndMonotone, WeightMode, YAxis,
 };
 
 pub mod picker;
@@ -164,22 +164,6 @@ pub struct FitArgs {
     /// Export curve (model + params + fitted grid) to JSON.
     #[arg(long = "export-curve")]
     pub export_curve: Option<PathBuf>,
-
-    /// Front-end conditioning for the limit value `y(0) = β0 + β1`.
-    ///
-    /// This is implemented as a **parameter constraint** (not as a synthetic data
-    /// point). It can help prevent unrealistic “hooks” at the very short end when
-    /// the dataset has few short maturities.
-    #[arg(long = "front-end", value_enum, default_value_t = FrontEndMode::Zero)]
-    pub front_end_mode: FrontEndMode,
-
-    /// Explicit `y(0)` value used when `--front-end fixed`.
-    #[arg(long = "front-end-value", value_name = "FLOAT")]
-    pub front_end_value: Option<f64>,
-
-    /// Tenor window (years) used by `--front-end auto` estimation.
-    #[arg(long = "front-end-window", default_value_t = 1.0)]
-    pub front_end_window: f64,
 
     /// Short-end monotonicity constraint (shape guardrail).
     #[arg(long = "short-end-monotone", value_enum, default_value_t = ShortEndMonotone::Auto)]

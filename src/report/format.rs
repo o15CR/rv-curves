@@ -86,9 +86,9 @@ pub fn format_run_summary(ingest: &IngestedData, selection: &FitSelection, confi
         out.push_str(&format!("Units: {note}\n"));
     }
     out.push_str(&format!(
-        "Fit: weight={:?} | front_end={} | short_end_monotone={:?}@{:.2}y | robust={} (iters={}, k={})\n",
+        "Fit: weight={:?} | anchors={} | short_end_monotone={:?}@{:.2}y | robust={} (iters={}, k={})\n",
         config.weight_mode,
-        front_end_status(selection.front_end_value, config.front_end_mode),
+        anchor_status(config),
         config.short_end_monotone,
         config.short_end_window,
         robust_status(config.robust),
@@ -159,17 +159,12 @@ fn robust_status(kind: crate::domain::RobustKind) -> &'static str {
     }
 }
 
-fn front_end_status(value_used: Option<f64>, mode: crate::domain::FrontEndMode) -> String {
-    let Some(v) = value_used else {
+fn anchor_status(config: &FitConfig) -> String {
+    if config.anchor_tenors.is_empty() {
         return "off".to_string();
-    };
-
-    match mode {
-        crate::domain::FrontEndMode::Auto => format!("auto({v:.3})"),
-        crate::domain::FrontEndMode::Zero => format!("zero({v:.3})"),
-        crate::domain::FrontEndMode::Fixed => format!("fixed({v:.3})"),
-        crate::domain::FrontEndMode::Off => format!("{v:.3}"),
     }
+    let tenors: Vec<String> = config.anchor_tenors.iter().map(|t| format!("{t:.2}")).collect();
+    format!("[{}]y", tenors.join(","))
 }
 
 /// Format the cheap/rich tables.
