@@ -10,7 +10,7 @@
 use std::fs::File;
 use std::path::Path;
 
-use crate::domain::{CurveFile, CurveGrid, FitConfig, FitResult, FrontEndMode, YKind};
+use crate::domain::{CurveFile, CurveGrid, FitConfig, FitResult};
 use crate::error::AppError;
 use crate::io::ingest::IngestedData;
 use crate::models::predict;
@@ -20,14 +20,7 @@ pub fn write_curve_json(path: &Path, best: &FitResult, ingest: &IngestedData, co
     let file = File::create(path)
         .map_err(|e| AppError::new(2, format!("Failed to create curve JSON '{}': {e}", path.display())))?;
 
-    // If a front-end constraint is active, include `tenor=0` in the exported grid
-    // so downstream plots show the intended short-end behavior.
-    let tenor_min = if front_end_active(config, ingest.input_spec.y_kind) {
-        0.0
-    } else {
-        ingest.stats.tenor_min
-    };
-    let (tenors, y) = build_grid(best, tenor_min, ingest.stats.tenor_max, 101);
+    let (tenors, y) = build_grid(best, ingest.stats.tenor_min, ingest.stats.tenor_max, 101);
 
     let curve = CurveFile {
         tool: "rv".to_string(),
@@ -43,11 +36,6 @@ pub fn write_curve_json(path: &Path, best: &FitResult, ingest: &IngestedData, co
         .map_err(|e| AppError::new(2, format!("Failed to write curve JSON: {e}")))?;
 
     Ok(())
-}
-
-fn front_end_active(config: &FitConfig, y_kind: YKind) -> bool {
-    matches!(y_kind, YKind::Oas)
-        && !matches!(config.front_end_mode, FrontEndMode::Off)
 }
 
 /// Read a curve JSON file.

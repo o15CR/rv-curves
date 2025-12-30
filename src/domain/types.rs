@@ -81,24 +81,6 @@ impl YKind {
     }
 }
 
-/// Short-end monotonicity constraint (shape guardrail).
-///
-/// This is applied as a **candidate filter** during tau grid search:
-/// after solving for betas at a given tau tuple, we reject candidates that
-/// violate the chosen monotonicity over a configurable short-end window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
-#[serde(rename_all = "lowercase")]
-pub enum ShortEndMonotone {
-    /// No monotonicity constraint.
-    None,
-    /// Infer direction from data and enforce it.
-    Auto,
-    /// Enforce `y(t)` non-decreasing for `t in [0, window]`.
-    Increasing,
-    /// Enforce `y(t)` non-increasing for `t in [0, window]`.
-    Decreasing,
-}
-
 /// Which model(s) to fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -108,20 +90,6 @@ pub enum ModelSpec {
     Nss,
     Nssc,
     All,
-}
-
-/// Outlier-robust fitting mode.
-///
-/// When enabled, the fitter iteratively reweights observations based on residuals
-/// (Huber IRLS). This helps prevent a few very wide/tight bonds from dominating
-/// the curve shape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
-#[serde(rename_all = "lowercase")]
-pub enum RobustKind {
-    /// Ordinary least squares (no robust reweighting).
-    None,
-    /// Huber M-estimator via iterative reweighted least squares.
-    Huber,
 }
 
 /// Concrete fitted model kind.
@@ -165,29 +133,6 @@ impl ModelKind {
     pub fn param_count(self) -> usize {
         self.beta_len() + self.tau_len()
     }
-}
-
-/// How to condition the curve as `tenor -> 0`.
-///
-/// In the Nelson-Siegel family, the limiting short-end value is:
-///
-/// `y(0) = beta0 + beta1`
-///
-/// If the dataset has no very short maturities, `y(0)` can be weakly identified
-/// and the fitted curve may exhibit unrealistic "hooks" near 0y. This knob
-/// allows you to constrain `y(0)` in a principled way (as a parameter constraint,
-/// not as a synthetic observation).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
-#[serde(rename_all = "lowercase")]
-pub enum FrontEndMode {
-    /// Do not constrain `y(0)` (fully free betas).
-    Off,
-    /// Estimate a robust short-end level from the data and fix `y(0)` to it.
-    Auto,
-    /// Fix `y(0) = 0` (useful for many investment-grade spread curves).
-    Zero,
-    /// Fix `y(0)` to `front_end_value` (explicit).
-    Fixed,
 }
 
 /// A normalized observation point used for fitting.
@@ -307,25 +252,6 @@ pub struct FitConfig {
 
     pub export_results: Option<PathBuf>,
     pub export_curve: Option<PathBuf>,
-
-    /// Front-end conditioning mode for `y(0)`.
-    pub front_end_mode: FrontEndMode,
-    /// Explicit `y(0)` value used when `front_end_mode = fixed`.
-    pub front_end_value: Option<f64>,
-    /// Tenor window (years) used by `front_end_mode=auto` estimation.
-    pub front_end_window: f64,
-
-    /// Optional monotonicity constraint on the short end.
-    pub short_end_monotone: ShortEndMonotone,
-    /// Tenor window (years) over which monotonicity is enforced.
-    pub short_end_window: f64,
-
-    /// Robust fitting mode.
-    pub robust: RobustKind,
-    /// Number of IRLS reweight iterations (0 disables reweighting even if robust!=none).
-    pub robust_iters: usize,
-    /// Huber tuning constant (larger = less downweighting).
-    pub robust_k: f64,
 
     /// Jump probability for wide outliers (rich bonds).
     pub jump_prob_wide: f64,

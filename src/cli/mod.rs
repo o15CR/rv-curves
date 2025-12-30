@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use crate::domain::{FrontEndMode, ModelSpec, RatingBand, RobustKind, ShortEndMonotone};
+use crate::domain::{ModelSpec, RatingBand};
 
 pub mod picker;
 
@@ -109,38 +109,6 @@ pub struct FitArgs {
     /// Export curve (model + params + fitted grid) to JSON.
     #[arg(long = "export-curve")]
     pub export_curve: Option<PathBuf>,
-
-    /// Front-end conditioning for the limit value `y(0) = beta0 + beta1`.
-    #[arg(long = "front-end", value_enum, default_value_t = FrontEndMode::Zero)]
-    pub front_end_mode: FrontEndMode,
-
-    /// Explicit `y(0)` value used when `--front-end fixed`.
-    #[arg(long = "front-end-value", value_name = "FLOAT")]
-    pub front_end_value: Option<f64>,
-
-    /// Tenor window (years) used by `--front-end auto` estimation.
-    #[arg(long = "front-end-window", default_value_t = 1.0)]
-    pub front_end_window: f64,
-
-    /// Short-end monotonicity constraint (shape guardrail).
-    #[arg(long = "short-end-monotone", value_enum, default_value_t = ShortEndMonotone::Auto)]
-    pub short_end_monotone: ShortEndMonotone,
-
-    /// Tenor window (years) over which short-end monotonicity is enforced.
-    #[arg(long = "short-end-window", default_value_t = 1.0)]
-    pub short_end_window: f64,
-
-    /// Robust fitting mode for downweighting outliers.
-    #[arg(long, value_enum, default_value_t = RobustKind::Huber)]
-    pub robust: RobustKind,
-
-    /// Number of IRLS reweight iterations for robust fitting.
-    #[arg(long, default_value_t = 2)]
-    pub robust_iters: usize,
-
-    /// Huber tuning constant (larger = less downweighting).
-    #[arg(long, default_value_t = 1.5)]
-    pub robust_k: f64,
 
     /// Probability of generating a wide (cheap) outlier.
     #[arg(long, default_value_t = 0.05)]
