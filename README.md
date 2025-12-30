@@ -35,9 +35,9 @@ cargo run
 ```
 
 This launches the interactive TUI where you can:
-- Select rating band (AAA, AA, A, BBB, BB, B, CCC+)
+- Select rating band (AAA, AA, A, BBB, BB, B, CCC)
 - Adjust sample parameters
-- View fitted curves and residuals
+- View fitted curve with points and highlights
 - Toggle between model types
 
 ## Data Sources
@@ -57,7 +57,7 @@ The tool pulls from ICE BofA US Corporate OAS indices via FRED:
 | BAMLC0A4CBBB | BBB Rating |
 | BAMLH0A1HYBB | BB Rating |
 | BAMLH0A2HYB | B Rating |
-| BAMLH0A3HYC | CCC+ Rating |
+| BAMLH0A3HYC | CCC Rating |
 
 ## Synthetic Data Generation
 
@@ -92,27 +92,17 @@ Three Nelson-Siegel family models are supported:
 
 - **Separable least squares**: For fixed tau values, betas are solved via SVD
 - **Deterministic grid search**: Tau parameters searched on log-spaced grids
-- **Anchor regularization**: Soft constraints on short-end curve behavior to prevent pathological shapes
-- **Non-negativity**: Ensures fitted spreads remain positive across the tenor range
 
 ## TUI Controls
 
 | Key | Action |
 |-----|--------|
-| `r` | Change rating band |
-| `s` | Adjust sample count |
+| `↑/↓` | Change rating band |
+| `←/→` | Adjust sample count |
+| `g` | Regenerate sample (new seed) |
 | `m` | Toggle model type |
-| `Space` | Refit curve |
-| `d` | Generate debug bundle |
+| `e` | Export (if paths provided) |
 | `q` | Quit |
-
-## Debug Output
-
-Run with `--debug` or press `d` in the TUI to generate a markdown debug bundle containing:
-- FRED snapshot values and computed volatilities
-- Sample points with baseline and observed values
-- Fitted model parameters and quality metrics
-- Curve grid at standard tenors
 
 ## Project Structure
 
@@ -127,7 +117,7 @@ src/
 ├── models/       # NS/NSS/NSS+ model definitions
 ├── plot/         # ASCII plotting
 ├── report/       # Output formatting
-└── tui/          # Terminal UI (Ratatui + Plotters)
+└── tui/          # Terminal UI (Ratatui)
 ```
 
 ## Limitations
