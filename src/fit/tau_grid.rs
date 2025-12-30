@@ -39,41 +39,25 @@ pub fn tau_grid_ns(min: f64, max: f64, steps: usize) -> Result<Vec<Vec<f64>>, Ap
 }
 
 /// NSS tau grid: `[τ1, τ2]` with constraint `τ1 < τ2`.
-pub fn tau_grid_nss(
-    min: f64,
-    max: f64,
-    steps: usize,
-    min_ratio: f64,
-) -> Result<Vec<Vec<f64>>, AppError> {
+pub fn tau_grid_nss(min: f64, max: f64, steps: usize) -> Result<Vec<Vec<f64>>, AppError> {
     let values = log_space(min, max, steps)?;
-    let min_ratio = min_ratio.max(1.0);
     let mut out = Vec::new();
     for i in 0..values.len() {
         for j in (i + 1)..values.len() {
-            if values[j] >= values[i] * min_ratio {
-                out.push(vec![values[i], values[j]]);
-            }
+            out.push(vec![values[i], values[j]]);
         }
     }
     Ok(out)
 }
 
 /// NSSC tau grid: `[τ1, τ2, τ3]` with constraint `τ1 < τ2 < τ3`.
-pub fn tau_grid_nssc(
-    min: f64,
-    max: f64,
-    steps: usize,
-    min_ratio: f64,
-) -> Result<Vec<Vec<f64>>, AppError> {
+pub fn tau_grid_nssc(min: f64, max: f64, steps: usize) -> Result<Vec<Vec<f64>>, AppError> {
     let values = log_space(min, max, steps)?;
-    let min_ratio = min_ratio.max(1.0);
     let mut out = Vec::new();
     for i in 0..values.len() {
         for j in (i + 1)..values.len() {
             for k in (j + 1)..values.len() {
-                if values[j] >= values[i] * min_ratio && values[k] >= values[j] * min_ratio {
-                    out.push(vec![values[i], values[j], values[k]]);
-                }
+                out.push(vec![values[i], values[j], values[k]]);
             }
         }
     }
@@ -93,9 +77,10 @@ mod tests {
 
     #[test]
     fn nssc_grid_enforces_order() {
-        let grid = tau_grid_nssc(0.1, 10.0, 6, 1.0).unwrap();
+        let grid = tau_grid_nssc(0.1, 10.0, 6).unwrap();
         for taus in grid {
             assert!(taus[0] < taus[1] && taus[1] < taus[2]);
         }
     }
 }
+

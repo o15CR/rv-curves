@@ -1,11 +1,12 @@
 //! Domain types used throughout the pipeline.
 //!
 //! This module defines:
-//! - core configuration enums (model spec, guardrails)
-//! - synthetic rating bands
-//! - normalized bond observation points
-//! - fit outputs and diagnostics
+//!
+//! - input configuration enums (`YKind`, `EventKind`, `DayCount`, `ModelSpec`)
+//! - normalized bond observation points (`BondPoint`)
+//! - fit outputs (`FitResult`, `CurveModel`, etc.)
 
 pub mod types;
 
 pub use types::*;
+

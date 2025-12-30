@@ -10,27 +10,28 @@
 use std::fs::File;
 use std::path::Path;
 
-use crate::domain::{CurveFile, CurveGrid, FitResult};
+use crate::domain::{CurveFile, CurveGrid, FitConfig, FitResult, FrontEndMode};
 use crate::error::AppError;
 use crate::io::ingest::IngestedData;
 use crate::models::predict;
 
 /// Write a curve JSON file.
-pub fn write_curve_json(path: &Path, best: &FitResult, ingest: &IngestedData) -> Result<(), AppError> {
+pub fn write_curve_json(path: &Path, best: &FitResult, ingest: &IngestedData, config: &FitConfig) -> Result<(), AppError> {
     let file = File::create(path)
         .map_err(|e| AppError::new(2, format!("Failed to create curve JSON '{}': {e}", path.display())))?;
 
-    // Always include the short end in the grid since anchors are always active
-    // for credit spread curves.
-    let tenor_min = match ingest.input_spec.y_kind {
-        crate::domain::YKind::Oas | crate::domain::YKind::Spread => 0.0,
-        _ => ingest.stats.tenor_min,
+    // If a front-end constraint is active, include `tenor=0` in the exported grid
+    // so downstream plots show the intended short-end behavior.
+    let tenor_min = if front_end_active(config, ingest.input_spec.y_kind) {
+        0.0
+    } else {
+        ingest.stats.tenor_min
     };
     let (tenors, y) = build_grid(best, tenor_min, ingest.stats.tenor_max, 101);
 
     let curve = CurveFile {
         tool: "rv".to_string(),
-        asof_date: ingest.input_spec.asof_date,
+        asof_date: config.asof_date,
         y: ingest.input_spec.y_kind,
         event: ingest.input_spec.event_kind,
         day_count: ingest.input_spec.day_count,
@@ -43,6 +44,11 @@ pub fn write_curve_json(path: &Path, best: &FitResult, ingest: &IngestedData) ->
         .map_err(|e| AppError::new(2, format!("Failed to write curve JSON: {e}")))?;
 
     Ok(())
+}
+
+fn front_end_active(config: &FitConfig, y_kind: crate::domain::YKind) -> bool {
+    matches!(y_kind, crate::domain::YKind::Oas | crate::domain::YKind::Spread)
+        && !matches!(config.front_end_mode, FrontEndMode::Off)
 }
 
 /// Read a curve JSON file.
