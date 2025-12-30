@@ -1,2 +1,0 @@
-id,maturity_date,call_date,oas,spread,yield,ytm,ytc,price,coupon,rating,sector,currency,issuer,weight,dv01
-ABC_5.25_2030,2030-06-15,2027-06-15,145.3,140.0,0.0540,0.0612,0.0589,99.25,0.0525,BBB,Banks,USD,ABC Bank,1.5,42.0
