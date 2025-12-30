@@ -28,7 +28,25 @@ pub fn render_ascii_plot(
     render_plot(residuals, Some(&curve), t_min, t_max, width, height, rankings)
 }
 
-/// Render a plot from a saved curve JSON file.
+/// Render a plot from a saved curve JSON file (curve only, no overlay points).
+pub fn render_ascii_plot_from_curve_file_only(
+    curve: &CurveFile,
+    width: usize,
+    height: usize,
+) -> String {
+    let (t_min, t_max) = curve_tenor_range(curve).unwrap_or((0.25, 30.0));
+    let curve_points: Vec<(f64, f64)> = curve
+        .grid
+        .tenor_years
+        .iter()
+        .zip(curve.grid.y.iter())
+        .map(|(&t, &y)| (t, y))
+        .collect();
+
+    render_plot(&[], Some(&curve_points), t_min, t_max, width, height, None)
+}
+
+/// Render a plot from a saved curve JSON file with overlay points.
 pub fn render_ascii_plot_from_curve_file(
     residuals: &[BondResidual],
     curve: &CurveFile,
@@ -36,7 +54,6 @@ pub fn render_ascii_plot_from_curve_file(
     height: usize,
 ) -> String {
     let (t_min, t_max) = curve_tenor_range(curve).unwrap_or((0.25, 30.0));
-    // Use the stored grid for plotting the curve (stable).
     let curve_points: Vec<(f64, f64)> = curve
         .grid
         .tenor_years
@@ -99,7 +116,7 @@ fn render_plot(
     // Build final string. We include a small header with ranges.
     let mut out = String::new();
     out.push_str(&format!(
-        "Plot: tenor=[{t_min:.3}, {t_max:.3}] years | y=[{y_min:.6}, {y_max:.6}]\n"
+        "Plot: tenor=[{t_min:.3}, {t_max:.3}] years | y=[{y_min:.2}, {y_max:.2}]bp\n"
     ));
 
     for row in grid {
@@ -262,9 +279,8 @@ mod tests {
             BondResidual {
                 point: BondPoint {
                     id: "B1".to_string(),
+                    asof_date: asof,
                     maturity_date: asof,
-                    call_date: None,
-                    event_date: asof,
                     tenor: 1.0,
                     y_obs: 100.0,
                     weight: 1.0,
@@ -277,9 +293,8 @@ mod tests {
             BondResidual {
                 point: BondPoint {
                     id: "B2".to_string(),
+                    asof_date: asof,
                     maturity_date: asof,
-                    call_date: None,
-                    event_date: asof,
                     tenor: 10.0,
                     y_obs: 110.0,
                     weight: 1.0,
@@ -303,7 +318,7 @@ mod tests {
 
         let txt = render_ascii_plot(&points, &fit, 10, 5, None);
         let expected = concat!(
-            "Plot: tenor=[1.000, 10.000] years | y=[99.500000, 110.500000]\n",
+            "Plot: tenor=[1.000, 10.000] years | y=[99.50, 110.50]bp\n",
             "         o\n",
             "          \n",
             "          \n",

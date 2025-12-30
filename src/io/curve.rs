@@ -1,8 +1,8 @@
 //! Read/write curve JSON files.
 //!
 //! Curve JSON is the "portable" representation of a fitted curve:
-//! - model kind + parameters (βs and τs)
-//! - run metadata (as-of, y-kind, event-kind, day-count)
+//! - model kind + parameters (betas and taus)
+//! - run metadata (as-of, y-kind, rating)
 //! - a precomputed fitted grid for quick plotting
 //!
 //! The schema is defined by `domain::CurveFile`.
@@ -10,7 +10,7 @@
 use std::fs::File;
 use std::path::Path;
 
-use crate::domain::{CurveFile, CurveGrid, FitConfig, FitResult, FrontEndMode};
+use crate::domain::{CurveFile, CurveGrid, FitConfig, FitResult, FrontEndMode, YKind};
 use crate::error::AppError;
 use crate::io::ingest::IngestedData;
 use crate::models::predict;
@@ -31,10 +31,9 @@ pub fn write_curve_json(path: &Path, best: &FitResult, ingest: &IngestedData, co
 
     let curve = CurveFile {
         tool: "rv".to_string(),
-        asof_date: config.asof_date,
+        asof_date: ingest.input_spec.asof_date,
         y: ingest.input_spec.y_kind,
-        event: ingest.input_spec.event_kind,
-        day_count: ingest.input_spec.day_count,
+        rating: config.rating,
         model: best.model.clone(),
         fit_quality: best.quality.clone(),
         grid: CurveGrid { tenor_years: tenors, y },
@@ -46,8 +45,8 @@ pub fn write_curve_json(path: &Path, best: &FitResult, ingest: &IngestedData, co
     Ok(())
 }
 
-fn front_end_active(config: &FitConfig, y_kind: crate::domain::YKind) -> bool {
-    matches!(y_kind, crate::domain::YKind::Oas | crate::domain::YKind::Spread)
+fn front_end_active(config: &FitConfig, y_kind: YKind) -> bool {
+    matches!(y_kind, YKind::Oas)
         && !matches!(config.front_end_mode, FrontEndMode::Off)
 }
 

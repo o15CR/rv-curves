@@ -20,18 +20,26 @@
 
 use nalgebra::{DMatrix, DVector};
 
-/// Solve a least squares problem using QR decomposition, with SVD fallback.
+/// Solve a least squares problem using SVD.
 ///
 /// Returns `None` if the system is too ill-conditioned to solve robustly.
 pub fn solve_least_squares(x: &DMatrix<f64>, y: &DVector<f64>) -> Option<DVector<f64>> {
-    // SVD solve with a small tolerance.
+    // SVD solve with a relaxed tolerance to handle near-singular matrices.
+    // Credit curve fitting can produce nearly collinear basis columns for
+    // certain tau values, so we use a tolerance that balances numerical
+    // stability with solution acceptance.
     let svd = x.clone().svd(true, true);
-    let beta = svd.solve(y, 1e-12).ok()?;
-    if beta.iter().all(|v| v.is_finite()) {
-        Some(beta)
-    } else {
-        None
+    
+    // Try progressively looser tolerances if strict solve fails.
+    for &tol in &[1e-10, 1e-8, 1e-6] {
+        if let Ok(beta) = svd.solve(y, tol) {
+            if beta.iter().all(|v| v.is_finite()) {
+                return Some(beta);
+            }
+        }
     }
+    
+    None
 }
 
 #[cfg(test)]

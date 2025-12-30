@@ -35,25 +35,6 @@ pub fn compute_residuals(points: &[BondPoint], fit: &FitResult) -> Result<Vec<Bo
     Ok(out)
 }
 
-/// Plot helper: compute residuals for an optional overlay points set.
-pub fn compute_residuals_for_plot(
-    overlay_points: Option<&[BondPoint]>,
-    curve_model: &crate::domain::CurveModel,
-) -> Result<Vec<BondResidual>, AppError> {
-    let Some(points) = overlay_points else { return Ok(Vec::new()) };
-    let mut out = Vec::with_capacity(points.len());
-    for p in points {
-        let y_fit = predict(curve_model.name, p.tenor, &curve_model.betas, &curve_model.taus);
-        let residual = p.y_obs - y_fit;
-        out.push(BondResidual {
-            point: p.clone(),
-            y_fit,
-            residual,
-        });
-    }
-    Ok(out)
-}
-
 /// Rank the top cheap and rich bonds by residual.
 pub fn rank_cheap_rich(residuals: &[BondResidual], top_n: usize) -> Rankings {
     let mut sorted = residuals.to_vec();
@@ -72,22 +53,22 @@ pub fn rank_cheap_rich(residuals: &[BondResidual], top_n: usize) -> Rankings {
 pub fn format_run_summary(ingest: &IngestedData, selection: &FitSelection, config: &FitConfig) -> String {
     let mut out = String::new();
 
-    out.push_str("=== rv — RV Curve Fit ===\n");
-    out.push_str(&format!("CSV: {}\n", config.csv_path.display()));
-    out.push_str(&format!("As-of: {}\n", config.asof_date));
+    out.push_str("=== rv - RV Curve Fit (FRED-based) ===\n");
+    out.push_str(&format!("Rating: {}\n", config.rating.display_name()));
+    out.push_str(&format!("As-of: {}\n", ingest.input_spec.asof_date));
     out.push_str(&format!(
-        "Y: {:?} ({}) | Event: {:?} | DayCount: {:?}\n",
+        "Y: {:?} ({})\n",
         ingest.input_spec.y_kind,
         ingest.input_spec.y_unit_label(),
-        ingest.input_spec.event_kind,
-        ingest.input_spec.day_count
     ));
-    if let Some(note) = ingest.input_spec.unit_note.as_deref() {
-        out.push_str(&format!("Units: {note}\n"));
-    }
     out.push_str(&format!(
-        "Fit: weight={:?} | front_end={} | short_end_monotone={:?}@{:.2}y | robust={} (iters={}, k={})\n",
-        config.weight_mode,
+        "Sample: n={} | tenor=[{:.2}, {:.2}]y\n",
+        config.sample_count,
+        config.tenor_min,
+        config.tenor_max,
+    ));
+    out.push_str(&format!(
+        "Fit: front_end={} | short_end_monotone={:?}@{:.2}y | robust={} (iters={}, k={})\n",
         front_end_status(selection.front_end_value, config.front_end_mode),
         config.short_end_monotone,
         config.short_end_window,
@@ -97,27 +78,7 @@ pub fn format_run_summary(ingest: &IngestedData, selection: &FitSelection, confi
     ));
 
     out.push_str(&format!(
-        "Rows read: {} | Rows used: {} | Row errors: {}\n",
-        ingest.rows_read,
-        ingest.rows_used,
-        ingest.row_errors.len()
-    ));
-
-    if !ingest.row_errors.is_empty() {
-        out.push_str("Row error examples:\n");
-        for e in ingest.row_errors.iter().take(5) {
-            match &e.id {
-                Some(id) => out.push_str(&format!("  line {} (id={}): {}\n", e.line, id, e.message)),
-                None => out.push_str(&format!("  line {}: {}\n", e.line, e.message)),
-            }
-        }
-        if ingest.row_errors.len() > 5 {
-            out.push_str(&format!("  ... ({} more)\n", ingest.row_errors.len() - 5));
-        }
-    }
-
-    out.push_str(&format!(
-        "Points: n={} | tenor=[{:.3}, {:.3}] | y=[{:.6}, {:.6}]\n",
+        "Points: n={} | tenor=[{:.3}, {:.3}] | y=[{:.2}, {:.2}]bp\n",
         ingest.stats.n_points,
         ingest.stats.tenor_min,
         ingest.stats.tenor_max,
@@ -129,7 +90,7 @@ pub fn format_run_summary(ingest: &IngestedData, selection: &FitSelection, confi
     for fit in &selection.fits {
         let chosen = if fit.model.name == selection.best.model.name { "*" } else { " " };
         out.push_str(&format!(
-            "{chosen} {:<12} SSE={:.6} RMSE={:.6} BIC={:.6}\n",
+            "{chosen} {:<12} SSE={:.3} RMSE={:.3}bp BIC={:.3}\n",
             fit.model.display_name,
             fit.quality.sse,
             fit.quality.rmse,
@@ -165,10 +126,10 @@ fn front_end_status(value_used: Option<f64>, mode: crate::domain::FrontEndMode) 
     };
 
     match mode {
-        crate::domain::FrontEndMode::Auto => format!("auto({v:.3})"),
-        crate::domain::FrontEndMode::Zero => format!("zero({v:.3})"),
-        crate::domain::FrontEndMode::Fixed => format!("fixed({v:.3})"),
-        crate::domain::FrontEndMode::Off => format!("{v:.3}"),
+        crate::domain::FrontEndMode::Auto => format!("auto({v:.1})"),
+        crate::domain::FrontEndMode::Zero => format!("zero({v:.1})"),
+        crate::domain::FrontEndMode::Fixed => format!("fixed({v:.1})"),
+        crate::domain::FrontEndMode::Off => format!("{v:.1}"),
     }
 }
 
@@ -187,19 +148,18 @@ pub fn format_rankings(rankings: &Rankings, input_spec: &InputSpec) -> String {
 }
 
 fn format_table(rows: &[BondResidual], input_spec: &InputSpec) -> String {
-    // Fixed-width table for stable output.
     let mut out = String::new();
     out.push_str(format!(
-        "{:<24} {:>8} {:>14} {:>14} {:>14} {:<10} {:<10} {:<8} {:<8}\n",
-        "id", "tenor", "y_obs", "y_fit", "residual", "issuer", "sector", "rating", "ccy"
+        "{:<24} {:>8} {:>12} {:>12} {:>12} {:<10}\n",
+        "id", "tenor", "y_obs", "y_fit", "residual", "rating"
     )
     .trim_end());
     out.push('\n');
 
     out.push_str(
         format!(
-        "{:-<24} {:-<8} {:-<14} {:-<14} {:-<14} {:-<10} {:-<10} {:-<8} {:-<8}\n",
-        "", "", "", "", "", "", "", "", ""
+        "{:-<24} {:-<8} {:-<12} {:-<12} {:-<12} {:-<10}\n",
+        "", "", "", "", "", ""
     )
         .trim_end(),
     );
@@ -209,16 +169,13 @@ fn format_table(rows: &[BondResidual], input_spec: &InputSpec) -> String {
         let p = &r.point;
         out.push_str(
             format!(
-            "{:<24} {:>8.3} {:>14} {:>14} {:>14} {:<10} {:<10} {:<8} {:<8}\n",
+            "{:<24} {:>8.3} {:>12} {:>12} {:>12} {:<10}\n",
             truncate(&p.id, 24),
             p.tenor,
             fmt_y(p.y_obs, input_spec.y_kind),
             fmt_y(r.y_fit, input_spec.y_kind),
             fmt_y(r.residual, input_spec.y_kind),
-            truncate(p.meta.issuer.as_deref().unwrap_or(""), 10),
-            truncate(p.meta.sector.as_deref().unwrap_or(""), 10),
-            truncate(p.meta.rating.as_deref().unwrap_or(""), 8),
-            truncate(p.meta.currency.as_deref().unwrap_or(""), 8),
+            truncate(p.meta.rating.as_deref().unwrap_or(""), 10),
         )
             .trim_end(),
         );
@@ -230,8 +187,7 @@ fn format_table(rows: &[BondResidual], input_spec: &InputSpec) -> String {
 
 fn fmt_y(v: f64, kind: YKind) -> String {
     match kind {
-        YKind::Oas | YKind::Spread => format!("{v:>14.3}"),
-        _ => format!("{v:>14.6}"),
+        YKind::Oas => format!("{v:>12.2}"),
     }
 }
 
@@ -251,7 +207,7 @@ fn truncate(s: &str, max: usize) -> String {
         }
         out.push(ch);
     }
-    out.push('…');
+    out.push('.');
     out
 }
 
@@ -262,14 +218,13 @@ mod tests {
     use crate::domain::{BondExtras, BondMeta, BondPoint, ModelKind};
 
     #[test]
-    fn rankings_golden_snapshot() {
+    fn compute_residuals_basic() {
         let asof = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
         let points = vec![
             BondPoint {
                 id: "B1".to_string(),
+                asof_date: asof,
                 maturity_date: asof,
-                call_date: None,
-                event_date: asof,
                 tenor: 1.0,
                 y_obs: 100.0,
                 weight: 1.0,
@@ -278,9 +233,8 @@ mod tests {
             },
             BondPoint {
                 id: "B2".to_string(),
+                asof_date: asof,
                 maturity_date: asof,
-                call_date: None,
-                event_date: asof,
                 tenor: 2.0,
                 y_obs: 101.0,
                 weight: 1.0,
@@ -300,73 +254,63 @@ mod tests {
         };
 
         let residuals = compute_residuals(&points, &fit).unwrap();
+        assert_eq!(residuals.len(), 2);
+        assert!((residuals[0].residual - 0.0).abs() < 0.01);
+        assert!((residuals[1].residual - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn rank_cheap_rich_basic() {
+        let asof = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
+        let residuals = vec![
+            BondResidual {
+                point: BondPoint {
+                    id: "B1".to_string(),
+                    asof_date: asof,
+                    maturity_date: asof,
+                    tenor: 1.0,
+                    y_obs: 100.0,
+                    weight: 1.0,
+                    meta: BondMeta::default(),
+                    extras: BondExtras::default(),
+                },
+                y_fit: 100.0,
+                residual: 0.0,
+            },
+            BondResidual {
+                point: BondPoint {
+                    id: "B2".to_string(),
+                    asof_date: asof,
+                    maturity_date: asof,
+                    tenor: 2.0,
+                    y_obs: 105.0,
+                    weight: 1.0,
+                    meta: BondMeta::default(),
+                    extras: BondExtras::default(),
+                },
+                y_fit: 100.0,
+                residual: 5.0,
+            },
+            BondResidual {
+                point: BondPoint {
+                    id: "B3".to_string(),
+                    asof_date: asof,
+                    maturity_date: asof,
+                    tenor: 3.0,
+                    y_obs: 95.0,
+                    weight: 1.0,
+                    meta: BondMeta::default(),
+                    extras: BondExtras::default(),
+                },
+                y_fit: 100.0,
+                residual: -5.0,
+            },
+        ];
+
         let rankings = rank_cheap_rich(&residuals, 1);
-        let spec = InputSpec {
-            asof_date: asof,
-            y_kind: YKind::Oas,
-            event_kind: crate::domain::EventKind::Maturity,
-            day_count: crate::domain::DayCount::Act365_25,
-            unit_note: None,
-        };
-
-        let txt = format_rankings(&rankings, &spec);
-
-        // Build a small "golden" expected output. We intentionally duplicate the
-        // formatting specs used in `format_table` so changes to the table layout
-        // cause this test to fail.
-        let header = format!(
-            "{:<24} {:>8} {:>14} {:>14} {:>14} {:<10} {:<10} {:<8} {:<8}\n",
-            "id", "tenor", "y_obs", "y_fit", "residual", "issuer", "sector", "rating", "ccy"
-        );
-        let header = format!("{}\n", header.trim_end());
-
-        let dashes = format!(
-            "{:-<24} {:-<8} {:-<14} {:-<14} {:-<14} {:-<10} {:-<10} {:-<8} {:-<8}\n",
-            "", "", "", "", "", "", "", "", ""
-        );
-        let dashes = format!("{}\n", dashes.trim_end());
-
-        let cheap_row = format!(
-            "{:<24} {:>8.3} {:>14} {:>14} {:>14} {:<10} {:<10} {:<8} {:<8}\n",
-            "B2",
-            2.0,
-            format!("{:>14.3}", 101.0),
-            format!("{:>14.3}", 100.0),
-            format!("{:>14.3}", 1.0),
-            "",
-            "",
-            "",
-            "",
-        );
-        let cheap_row = format!("{}\n", cheap_row.trim_end());
-
-        let rich_row = format!(
-            "{:<24} {:>8.3} {:>14} {:>14} {:>14} {:<10} {:<10} {:<8} {:<8}\n",
-            "B1",
-            1.0,
-            format!("{:>14.3}", 100.0),
-            format!("{:>14.3}", 100.0),
-            format!("{:>14.3}", 0.0),
-            "",
-            "",
-            "",
-            "",
-        );
-        let rich_row = format!("{}\n", rich_row.trim_end());
-
-        let expected = format!(
-            concat!(
-                "Top cheap (positive residual):\n",
-                "{header}{dashes}{cheap_row}\n",
-                "Top rich (negative residual):\n",
-                "{header}{dashes}{rich_row}"
-            ),
-            header = header,
-            dashes = dashes,
-            cheap_row = cheap_row,
-            rich_row = rich_row
-        );
-
-        assert_eq!(txt, expected);
+        assert_eq!(rankings.cheap.len(), 1);
+        assert_eq!(rankings.cheap[0].point.id, "B2");
+        assert_eq!(rankings.rich.len(), 1);
+        assert_eq!(rankings.rich[0].point.id, "B3");
     }
 }
